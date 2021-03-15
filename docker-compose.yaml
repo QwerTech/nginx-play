@@ -1,0 +1,20 @@
+version: '3'
+services:
+  nginx-blue:
+    image: nginx:1.19.6
+    volumes:
+    - ./nginx-blue.conf:/etc/nginx/nginx.conf
+    - ./http.js:/etc/nginx/http.js
+    - ./contracts.json:/etc/nginx/contracts.json
+    ports:
+    - "8080:8000"
+    environment:
+    - NGINX_PORT=8000    
+  nginx-green:
+    image: nginx:1.19.6
+    volumes:
+    - ./nginx-green.conf:/etc/nginx/nginx.conf
+    ports:
+    - "8081:8000"
+    environment:
+    - NGINX_PORT=8000
