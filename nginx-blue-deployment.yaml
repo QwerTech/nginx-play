@@ -1,0 +1,239 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: "nginx-blue"
+  annotations:
+    iconClass: "sitemap"
+objects:
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: "nginx-blue"
+    labels:
+      app: "nginx-blue"
+  spec:
+    ports:
+    - name: "nginx-blue"
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+    selector:
+      app: "nginx-blue"
+    type: ClusterIP
+- apiVersion: v1
+  kind: Route
+  metadata:
+    name: "nginx-blue"
+  spec:
+    tls:
+      insecureEdgeTerminationPolicy: Allow
+      termination: edge
+    to:
+      kind: "Service"
+      name: "nginx-blue"
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: "nginx-blue"
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    name: "nginx-blue"
+    labels:
+      app: "nginx-blue"
+  spec:
+    replicas: 1
+    selector:
+      app: "nginx-blue"
+    strategy:
+      activeDeadlineSeconds: 21600
+      type: Rolling
+      rollingParams:
+        failurePolicy: Abort
+        intervalSeconds: 1
+        maxSurge: 25%
+        maxUnavailable: 25%
+        timeoutSeconds: 600
+        updatePeriodSeconds: 1
+    template:
+      metadata:
+        labels:
+          app: "nginx-blue"
+      spec:
+        serviceAccountName: "nginx-blue"
+        containers:
+        - name: "nginx-blue"
+          image: "nginx"
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            failureThreshold: 5
+            initialDelaySeconds: 180
+            periodSeconds: 20
+            successThreshold: 1
+            tcpSocket:
+              port: 8080
+            timeoutSeconds: 5
+          readinessProbe:
+            failureThreshold: 5
+            initialDelaySeconds: 3
+            periodSeconds: 3
+            successThreshold: 1
+            httpGet:
+              path: /
+              port: 8080
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 50Mi
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /var/cache/nginx
+              name: nginx-cache
+            - mountPath: /var/run
+              name: nginx-run
+            - name: nginx-blue-config-volume
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+            - name: nginx-blue-config-volume
+              mountPath: /etc/nginx/http.js
+              subPath: http.js
+            - name: nginx-blue-config-volume
+              mountPath: /etc/nginx/contracts.json
+              subPath: contracts.json
+        volumes:
+          - name: nginx-blue-config-volume
+            configMap:
+              name: nginx-blue
+          - emptyDir:
+              medium: Memory
+            name: nginx-cache
+          - emptyDir:
+              medium: Memory
+            name: nginx-run
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext: {}
+        terminationGracePeriodSeconds: 30
+    triggers:
+      - type: ConfigChange
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: "nginx-blue"
+  data:
+    # свойства окружения nginx-blue
+    http.js: |-
+      var fs = require('fs');
+
+      var STORAGE = "/etc/nginx/contracts.json"
+
+      var data = [];
+      function hello(r) {
+          r.return(200, data);
+      }
+      // /undefined/Login/d2e10e91-837d-3b53-a29b-beb20cfd218d
+      // /undefined/Login/d2e1e881-837d-3b53-a29b-beb20cfd218d
+      // http://localhost:8080/undefined/Login/d28e8e91-837d-3b53-a29b-beb20cfd218d
+      // http://localhost:8080/undefined/Login/d2e10e91-837d-3b53-a29b-beb20cfd218d/asd
+      // http://localhost:8080/undefined/login/d2e10e91-837d-3b53-a29b-beb20cfd218d/asd
+      // http://localhost:8080/undefined/login/d2e10e91-837d-3b53-a29b-beb20cfd218d?a=1
+      // http://localhost:8080/undefined/d2e10e91-837d-3b53-a29b-beb20cfd218d?a=1
+      var uuidRegex = /(\/\w*)?\/\w*\/(\w{8}-\w{4}-\w{4}-\w{4}-\w{12})([\/?].*)?$/i;
+
+      function shouldProxy(r){
+      	//r.error(njs.dump(r));
+      	//r.error(njs.dump(process.env));
+
+      	var contractId = findContractId(r.uri, uuidRegex, r) || findContractId(r.headersIn.Referer, uuidRegex, r);
+      	if(!contractId){
+      		r.error(`Haven't found contractId in ${r.uri} or ${r.headersIn.Referer}`);
+      		return false;
+      	}
+      	var result = data.includes(contractId);
+      	r.log(`shouldProxy: ${result}`);
+      	return result;
+
+      }
+      function findContractId(str, regex, r){
+      	if(!str){
+      		return false;
+      	}
+      	var match = str.match(regex);
+      	if(match && match[2]){
+      		r.log(`${str} matched by ${regex}`);
+      		return match[2];
+      	}
+      	r.log(`${str} don't matched by ${regex}`);
+      	return false;
+      }
+      function read(){
+      	ngx.log(ngx.INFO, `Reading uuids`);
+      	try{
+      		var newData = JSON.parse(fs.readFileSync(STORAGE));
+      		if(JSON.stringify(newData) !== JSON.stringify(data)){
+      			ngx.log(ngx.INFO, `Read uuids to proxy ${njs.dump(newData)}`);
+      			data = newData;
+      		}
+      	}
+      	catch(e){
+      		ngx.log(ngx.ERR, njs.dump(e));
+      	}
+      	setTimeout(read, 1000);
+      }
+      var reading = reading || read();
+
+      export default {hello, shouldProxy};
+    # конфигурация nginx
+    nginx.conf: |-
+      user nginx;
+      load_module modules/ngx_http_js_module.so;
+
+      events {}
+      error_log /dev/stdout info;
+
+      http {
+      	access_log /dev/stdout;
+          js_import http.js;
+      	js_set $shouldProxyToAnotherEnv http.shouldProxy;
+
+          server {
+              listen 8080;
+              location / {
+
+      			proxy_http_version 1.1;
+      			proxy_set_header Host $host;
+      			proxy_set_header X-Real-IP $remote_addr;
+      			proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      			proxy_set_header X-Forwarded-Proto $scheme;
+
+      			if ($shouldProxyToAnotherEnv = true) {
+      				proxy_pass http://nginx-green:8080;
+      				break;
+      			}
+                  return 200 'Hello blue world!';
+              }
+          }
+      }
+
+    # идентификаторы договоров для проксирования
+    contracts.json: |-
+      [
+          "0481031d-6d18-36c2-88d1-9ff2eaf042e4",
+          "ee5f5558-e905-367d-a4be-8d695ab032b3",
+          "c30cbffb-e53f-3680-ab79-edbb545a8ba2",
+          "5ff162d9-3c31-3772-806b-ad4163c621dd",
+          "5b5c2e07-65eb-3505-9bcb-cfdad2ca6169",
+          "b33c01ee-4181-399c-b007-78e5f460736b",
+          "39c89efc-1ebe-3e46-bd20-233c965a5cae",
+          "7af4646b-83e4-361c-835c-86e4393fb5d0",
+          "7cc0ff7b-2230-33e1-b72d-abb01c05f481",
+          "7cc0ff7b-2230-33e1-b72d-abb01c05f481",
+          "7cc0ff7b-2230-33e1-b72d-abb01c05f481",
+          "d2e10e91-837d-3b53-a29b-beb20cfd218a"
+      ]
